@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>BusTalk TMSA 2.0</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    
+    <!-- FIREBASE -->
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+
+    <!-- MANIFEST PWA E ICONO -->
+    <link rel="manifest" href="data:application/json;base64,eyJuYW1lIjoiQnVzVGFsayBNZW5vcmNhIiwic2hvcnRfbmFtZSI6IkJ1c1RhbGsiLCJzdGFydF91cmwiOiIuIiwiZGlzcGxheSI6InN0YW5kYWxvbmUiLCJiYWNrZ3JvdW5kX2NvbG9yIjoiIzFhMWExYSIsInRoZW1lX2NvbG9yIjoiIzFhMWExYSIsImljb25zIjpbeyJzcmMiOiJodHRwczovL2Nkbi1pY29ucy1wbmcuZmxhdGljb24uY29tLzUxMi8zNzYwLzM3NjAxMzcucG5nIiwic2l6ZXMiOiI1MTJ4NTEyIiwidHlwZSI6ImltYWdlL3BuZyIsInB1cnBvc2UiOiJhbnkifV19">
+    <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/3760/3760137.png">
+
+    <style>
+        [x-cloak] { display: none !important; }
+        
+        body { 
+            background-color: #1a1a1a; 
+            user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+            padding-top: env(safe-area-inset-top);
+        }
+
+        .bg-gray-custom { background-color: #262626; }
+        
+        /* Efectos Botón Radio */
+        .ptt-active { background-color: #ef4444 !important; transform: scale(0.92); box-shadow: 0 0 30px rgba(239, 68, 68, 0.8); }
+        .ptt-receiving { background-color: #10b981 !important; box-shadow: 0 0 40px rgba(16, 185, 129, 0.9); animation: pulse-green 1s infinite; }
+        @keyframes pulse-green { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.05); } }
+
+        /* Luces y Alertas */
+        .luz-parada { box-shadow: 0 0 15px #10b981, inset 0 0 10px #10b981; background-color: #10b981; color: black; }
+        .alerta-lleno { background-color: #ea580c; animation: pulse-alert 2s infinite; border-color: #c2410c; }
+        .alerta-retraso { background-color: #ca8a04; animation: pulse-alert 2s infinite; border-color: #a16207; }
+        .alerta-averia { background-color: #dc2626; animation: pulse-alert 1s infinite; border-color: #991b1b; }
+        @keyframes pulse-alert { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
+
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
+</head>
+<body x-data="busTalkApp()" x-init="init()" class="text-white font-sans h-screen flex flex-col overflow-hidden">
+
+    <!-- MOTOR PWA -->
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                const swCode = `self.addEventListener('install', e => e.waitUntil(self.skipWaiting())); self.addEventListener('activate', e => e.waitUntil(self.clients.claim())); self.addEventListener('fetch', e => {});`;
+                const blob = new Blob([swCode], {type: 'application/javascript'});
+                navigator.serviceWorker.register(URL.createObjectURL(blob)).catch(console.error);
+            });
+        }
+    </script>
+
+    <div x-show="estadoRadio === 'recibiendo'" x-transition.opacity class="fixed inset-0 bg-green-500/20 z-[60] pointer-events-none animate-pulse"></div>
+
+    <!-- PANTALLA DE INICIO (Login) -->
+    <div x-show="!sesionIniciada" x-transition.opacity class="fixed inset-0 bg-black z-[100] flex flex-col items-center justify-center p-6 backdrop-blur-md">
+        <div class="bg-gray-900 p-8 rounded-[2rem] w-full max-w-sm text-center shadow-2xl border border-gray-800">
+            <div class="text-yellow-500 text-6xl mb-6"><i class="fas fa-bus"></i><i class="fas fa-broadcast-tower text-3xl ml-2"></i></div>
+            <h2 class="text-2xl font-black mb-2 text-white uppercase tracking-wider">BusTalk 2.0</h2>
+            <p class="text-gray-400 mb-6 text-sm">Selecciona tu Zona para conectar la radio.</p>
+            
+            <input type="number" x-model="miBusInput" placeholder="Nº de Bus (Ej: 56)" 
+                   class="w-full p-4 mb-4 rounded-2xl bg-gray-800 text-white text-center text-2xl font-black border-2 border-gray-700 focus:border-yellow-500 outline-none transition-colors">
+            
+            <!-- SELECTOR AGRUPADO POR ZONAS -->
+            <select x-model="miLineaInput" class="w-full p-4 mb-6 rounded-2xl bg-gray-800 text-white text-center text-sm font-bold border-2 border-gray-700 focus:border-yellow-500 outline-none appearance-none">
+                <option value="L01 (Maó-Ciu)">Línea 01 (Maó - Ciutadella)</option>
+                <option value="L14 (Exprés)">Línea 14 (Exprés Maó-Ciu)</option>
+                <option value="Zona Maó y Levante">🔵 ZONA MAÓ Y LEVANTE (Castell, S.Lluís, Playas Sur)</option>
+                <option value="Zona Centro y Poniente">🟠 ZONA CENTRO/PONIENTE (Galdana, S.Tomàs, Bou, Migjorn)</option>
+                <option value="Escolar">Rutas Escolares</option>
+                <option value="Discrecional">Discrecional / Otros</option>
+                <option value="General">🌍 CANAL GENERAL (Escuchar a todos)</option>
+            </select>
+
+            <button @click="iniciarTurno()" class="w-full bg-yellow-500 active:bg-yellow-600 text-black font-black text-lg py-5 rounded-2xl transition-transform active:scale-95 shadow-[0_0_20px_rgba(234,179,8,0.3)]">
+                CONECTAR RADIO
+            </button>
+        </div>
+    </div>
+
+    <!-- CABECERA -->
+    <header class="p-4 bg-black flex justify-between items-center border-b border-gray-800 z-10">
+        <div class="flex flex-col">
+            <div class="flex items-center space-x-2">
+                <span class="bg-yellow-500 text-black font-black px-2 py-1 rounded-md text-sm" x-text="'BUS ' + miBus"></span>
+                <h1 class="text-lg font-black tracking-tighter italic text-gray-300">Bus<span class="text-yellow-500">Talk</span></h1>
+            </div>
+            <span class="text-[10px] font-bold text-sky-400 mt-1 uppercase tracking-widest truncate max-w-[170px]" x-text="miLinea"></span>
+        </div>
+        <div class="flex items-center space-x-3">
+            <span class="text-[8px] font-mono text-gray-500 border border-gray-700 px-1.5 py-0.5 rounded tracking-[0.2em] opacity-60">medbasha</span>
+            <div class="flex items-center gap-1.5 bg-gray-900 px-3 py-1.5 rounded-full border border-gray-800">
+                <span class="w-2 h-2 rounded-full" :class="conectado ? 'bg-green-500 animate-pulse' : 'bg-red-500'"></span>
+            </div>
+            <button @click="cerrarTurno()" class="w-9 h-9 bg-gray-900 rounded-full flex items-center justify-center text-gray-400 active:text-red-500 transition-colors">
+                <i class="fas fa-power-off"></i>
+            </button>
+        </div>
+    </header>
+
+    <!-- LISTA DE COMPAÑEROS (RADAR CON TEXTOS GIGANTES) -->
+    <main class="flex-1 overflow-y-auto p-3 space-y-3 bg-[#121212] hide-scrollbar pb-6">
+        <div class="flex justify-between items-end mb-2 px-2 mt-2">
+            <p class="text-[10px] font-black text-gray-500 uppercase tracking-[0.2em]">Radar de Zona</p>
+            <p class="text-[10px] text-gray-600 font-bold" x-text="compañeros.length + ' activos'"></p>
+        </div>
+        
+        <template x-if="compañeros.length === 0 && sesionIniciada">
+            <div class="text-center py-10 opacity-30">
+                <i class="fas fa-satellite-dish text-6xl mb-4"></i>
+                <p class="font-bold text-sm uppercase tracking-widest">Zona despejada</p>
+            </div>
+        </template>
+
+        <template x-for="comp in compañeros" :key="comp.id">
+            <div class="p-4 rounded-2xl border-l-4 flex justify-between items-center shadow-lg transition-colors"
+                 :class="[
+                    comp.alerta === 'AVERÍA' ? 'alerta-averia' : 
+                    comp.alerta === 'LLENO' ? 'alerta-lleno' : 
+                    comp.alerta === 'RETRASO' ? 'alerta-retraso' : 
+                    (comp.id === elQueHabla ? 'border-green-500 bg-green-900/40' : (comp.enParada ? 'border-green-500 bg-gray-800' : 'border-blue-500 bg-gray-800'))
+                 ]">
+                
+                <div class="flex-1 overflow-hidden">
+                    <div class="flex items-center gap-2 mb-1">
+                        <p class="font-black text-2xl text-white" x-text="'Bus ' + comp.id"></p> <!-- Texto más grande -->
+                        <i x-show="comp.id === elQueHabla" class="fas fa-volume-up text-green-400 animate-pulse text-xl ml-2"></i>
+                        <span x-show="comp.alerta" class="px-2 py-0.5 bg-black/50 text-white rounded text-[11px] font-black uppercase tracking-widest border border-white/20">
+                            <i class="fas fa-exclamation-triangle text-yellow-400 mr-1"></i> <span x-text="comp.alerta"></span>
+                        </span>
+                    </div>
+
+                    <div class="flex items-center gap-2 mt-2">
+                        <!-- Paradas más legibles -->
+                        <span class="text-sm font-black uppercase tracking-wider px-2 py-0.5 rounded-md flex items-center gap-1 whitespace-nowrap truncate"
+                              :class="comp.enParada ? 'luz-parada' : 'bg-blue-500/20 text-blue-100'">
+                            <i class="fas" :class="comp.enParada ? 'fa-parking' : 'fa-route'"></i>
+                            <span x-text="comp.ubicacion"></span>
+                        </span>
+                        
+                        <span x-show="!comp.enParada && comp.eta" class="text-sm text-white opacity-90 font-bold whitespace-nowrap">
+                            <i class="fas fa-clock mr-1"></i> <span x-text="calcularMinutos(comp.eta)"></span>m
+                        </span>
+                    </div>
+                </div>
+                
+                <div class="text-right bg-black/40 px-5 py-2 rounded-xl border border-white/10 ml-2 flex-shrink-0">
+                    <p class="text-[9px] uppercase tracking-widest text-gray-300 font-bold mb-0.5">Pax</p>
+                    <span class="text-3xl font-black" :class="comp.pax > 40 ? 'text-red-400' : 'text-yellow-400'" x-text="comp.pax"></span>
+                </div>
+            </div>
+        </template>
+    </main>
+
+    <!-- PANEL DE CONTROL DEL CONDUCTOR -->
+    <footer class="p-4 bg-black rounded-t-[2.5rem] shadow-[0_-10px_40px_rgba(0,0,0,0.5)] border-t border-gray-800 relative z-20">
+        <div class="flex flex-col items-center max-w-md mx-auto">
+            
+            <!-- ALERTAS -->
+            <div class="w-full flex gap-2 mb-4 bg-gray-900 p-2 rounded-xl border border-gray-800">
+                <button @click="toggleAlerta('LLENO')" class="flex-1 py-2.5 rounded-lg text-[10px] font-black uppercase border active:scale-95 transition-transform" :class="miAlerta === 'LLENO' ? 'bg-orange-600 border-orange-500 text-white' : 'bg-gray-800 border-gray-700 text-gray-400'">🔴 Lleno</button>
+                <button @click="toggleAlerta('RETRASO')" class="flex-1 py-2.5 rounded-lg text-[10px] font-black uppercase border active:scale-95 transition-transform" :class="miAlerta === 'RETRASO' ? 'bg-yellow-600 border-yellow-500 text-white' : 'bg-gray-800 border-gray-700 text-gray-400'">🟡 Retraso</button>
+                <button @click="toggleAlerta('AVERÍA')" class="flex-1 py-2.5 rounded-lg text-[10px] font-black uppercase border active:scale-95 transition-transform" :class="miAlerta === 'AVERÍA' ? 'bg-red-600 border-red-500 text-white' : 'bg-gray-800 border-gray-700 text-gray-400'">🆘 Avería</button>
+            </div>
+
+            <!-- CARRUSEL Y BOTÓN INVERSOR (🔃) -->
+            <div class="w-full mb-4 flex items-center gap-2">
+                <!-- Botón Dar la Vuelta a la Ruta -->
+                <button @click="invertirRuta()" class="w-12 h-12 flex-shrink-0 bg-blue-600 text-white rounded-xl shadow-lg font-black text-xl active:bg-blue-700 transition-transform active:scale-90">
+                    <i class="fas fa-sync-alt"></i>
+                </button>
+                <!-- Carrusel -->
+                <div class="flex overflow-x-auto hide-scrollbar gap-2 pb-1 flex-1">
+                    <template x-for="lugar in misParadasArray" :key="lugar">
+                        <button @click="actualizarUbicacion(lugar)" 
+                                class="flex-shrink-0 px-5 py-3 rounded-xl text-xs font-black uppercase tracking-wider border transition-colors" 
+                                :class="miUbicacion === lugar ? 'bg-yellow-500 border-yellow-400 text-black shadow-[0_0_10px_rgba(234,179,8,0.3)]' : 'bg-gray-800 border-gray-700 text-gray-400 active:bg-gray-700'" 
+                                x-text="lugar"></button>
+                    </template>
+                </div>
+            </div>
+
+            <!-- PARADA/RUTA Y PASAJEROS (Con pulsación continua) -->
+            <div class="w-full flex gap-3 mb-6">
+                <!-- Estado del Bus -->
+                <div class="flex-1 bg-gray-900 rounded-2xl border border-gray-800 p-2 flex flex-col justify-center">
+                    <button @click="toggleParada()" class="w-full py-3 rounded-xl text-sm font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2"
+                            :class="enParada ? 'luz-parada' : 'bg-gray-800 text-gray-400'">
+                        <i class="fas" :class="enParada ? 'fa-parking' : 'fa-play'"></i>
+                        <span x-text="enParada ? 'EN PARADA' : 'SALIR / RUTA'"></span>
+                    </button>
+                    
+                    <div x-show="!enParada" class="flex justify-between items-center mt-2 px-1">
+                        <button @click="ajustarMinutos(-1)" class="w-10 h-10 bg-gray-800 rounded-lg text-white font-bold text-xl active:bg-gray-700">-</button>
+                        <div class="text-center">
+                            <span class="text-lg font-black text-blue-400" x-text="minutosRuta"></span><span class="text-xs text-blue-400 ml-1">min</span>
+                        </div>
+                        <button @click="ajustarMinutos(1)" class="w-10 h-10 bg-gray-800 rounded-lg text-white font-bold text-xl active:bg-gray-700">+</button>
+                    </div>
+                </div>
+
+                <!-- Botones PAX Continuos -->
+                <div class="flex-1 bg-gray-900 p-2 rounded-2xl border border-gray-800 flex items-center justify-between">
+                    <button @mousedown="iniciarPax(-1)" @mouseup="pararPax()" @mouseleave="pararPax()" @touchstart.prevent="iniciarPax(-1)" @touchend.prevent="pararPax()" 
+                            class="w-14 h-14 rounded-xl bg-gray-800 text-3xl flex items-center justify-center active:bg-red-500 transition-colors text-white shadow-md">-</button>
+                    <div class="text-center flex-1">
+                        <p class="text-[9px] uppercase text-gray-500 font-black tracking-widest">PAX</p>
+                        <p class="text-4xl font-black text-yellow-500 leading-none" x-text="miPax"></p>
+                    </div>
+                    <button @mousedown="iniciarPax(1)" @mouseup="pararPax()" @mouseleave="pararPax()" @touchstart.prevent="iniciarPax(1)" @touchend.prevent="pararPax()" 
+                            class="w-14 h-14 rounded-xl bg-gray-800 text-3xl flex items-center justify-center active:bg-green-500 transition-colors text-white shadow-md">+</button>
+                </div>
+            </div>
+
+            <!-- BOTONES DE RADIO: GLOBAL, PTT Y REPLAY -->
+            <div class="relative flex items-center justify-between w-full pb-2 px-2">
+                
+                <!-- Botón CANAL GLOBAL -->
+                <button @click="modoGlobal = !modoGlobal" class="w-14 h-14 rounded-full border-2 flex flex-col items-center justify-center transition-all shadow-md"
+                        :class="modoGlobal ? 'bg-blue-600 border-blue-400 text-white shadow-[0_0_15px_rgba(37,99,235,0.6)]' : 'bg-gray-900 border-gray-700 text-gray-500'">
+                    <i class="fas fa-globe-europe text-xl mb-0.5"></i>
+                    <span class="text-[6px] font-black uppercase tracking-widest" x-text="modoGlobal ? 'GLOBAL ON' : 'GLOBAL OFF'"></span>
+                </button>
+                
+                <!-- Botón PTT -->
+                <button id="btn-ptt"
+                    @mousedown="empezarGrabar()" @mouseup="pararGrabar()" @mouseleave="pararGrabarSiSale()"
+                    @touchstart.prevent="empezarGrabar()" @touchend.prevent="pararGrabar()"
+                    class="w-32 h-32 rounded-full flex flex-col items-center justify-center shadow-[0_0_30px_rgba(234,179,8,0.2)] transition-all duration-150 relative z-10"
+                    :class="[
+                        estadoRadio === 'grabando' ? 'ptt-active' : (estadoRadio === 'recibiendo' ? 'ptt-receiving' : 'bg-yellow-500'),
+                        modoGlobal && estadoRadio !== 'recibiendo' ? 'border-4 border-blue-500' : ''
+                    ]">
+                    <i class="fas text-4xl mb-1 text-black" :class="estadoRadio === 'recibiendo' ? 'fa-volume-up' : 'fa-microphone'"></i>
+                    <template x-if="estadoRadio === 'reposo'"><span class="text-black font-black text-[10px] tracking-widest" x-text="modoGlobal ? 'AVISO A TODOS' : 'HABLAR'"></span></template>
+                    <template x-if="estadoRadio === 'grabando'"><span class="text-black font-black text-[10px] tracking-widest">EMITIENDO</span></template>
+                    <template x-if="estadoRadio === 'recibiendo'">
+                        <div class="flex flex-col items-center leading-none">
+                            <span class="text-black font-black text-xs tracking-widest" x-text="'BUS ' + elQueHabla"></span>
+                            <span class="text-black/70 font-bold text-[8px] mt-1 truncate max-w-[90px]" x-text="lineaQueHabla"></span>
+                        </div>
+                    </template>
+                </button>
+
+                <!-- Botón REPETIR -->
+                <button @click="repetirUltimoAudio()" class="w-14 h-14 rounded-full border-2 flex flex-col items-center justify-center transition-colors shadow-md"
+                        :class="ultimoAudio ? 'bg-gray-800 border-gray-600 text-gray-300 active:bg-green-600 active:text-white' : 'bg-gray-900 border-gray-800 text-gray-700 opacity-50 cursor-not-allowed'">
+                    <i class="fas fa-redo text-lg mb-0.5"></i>
+                    <span class="text-[7px] font-black tracking-widest">REPETIR</span>
+                </button>
+            </div>
+            
+        </div>
+    </footer>
+
+    <script>
+        // TUS CLAVES DE FIREBASE
+        const firebaseConfig = {
+            apiKey: "AIzaSyC7b6_T0ze2HgXiYHfvUeL12JSXE7ZKogc",
+            authDomain: "misturnos-fe3ea.firebaseapp.com",
+            databaseURL: "https://misturnos-fe3ea-default-rtdb.europe-west1.firebasedatabase.app",
+            projectId: "misturnos-fe3ea",
+            storageBucket: "misturnos-fe3ea.firebasestorage.app",
+            messagingSenderId: "1029095925443",
+            appId: "1:1029095925443:web:873240d85ac5160f392476"
+        };
+
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
+        const auth = firebase.auth();
+
+        function busTalkApp() {
+            return {
+                sesionIniciada: false, conectado: false, wakeLockStatus: null,
+                miBusInput: '', miLineaInput: 'L01 (Maó-Ciu)', 
+                miBus: '', miLinea: '', miPax: 0, miUbicacion: '',
+                enParada: true, minutosRuta: 15, etaFinal: null, miAlerta: null,
+                compañeros:[], misParadasArray:[],
+                
+                estadoRadio: 'reposo', elQueHabla: null, lineaQueHabla: '',
+                mediaRecorder: null, chunks:[], streamingMsgId: null, ultimoAudio: null,
+                relojUI: null, modoGlobal: false, intervaloPax: null, watchdogRadio: null,
+
+                init() {
+                    const busGuardado = localStorage.getItem('bustalk_bus');
+                    const lineaGuardada = localStorage.getItem('bustalk_linea');
+                    if (busGuardado && lineaGuardada) {
+                        this.miBusInput = busGuardado;
+                        this.miLineaInput = lineaGuardada;
+                        this.iniciarTurno();
+                    }
+                    this.relojUI = setInterval(() => { this.compañeros = [...this.compañeros]; }, 10000);
+                },
+
+                // DICCIONARIO POR ZONAS Y LÍNEAS
+                cargarParadas() {
+                    const diccionario = {
+                        "L01 (Maó-Ciu)": ["Ciu", "Ferr", "Mer", "Alaior", "Maó"],
+                        "L14 (Exprés)": ["Ciu", "Maó"],
+                        "Zona Maó y Levante": ["Maó", "Castell", "S.Lluís", "P.Prima", "S'Algar", "Canutells", "Mesquida", "C.Porter", "Binisafúller", "Binibèquer", "Alcaufar", "Trebalúger", "Bintaufa", "S.Climent"],
+                        "Zona Centro y Poniente": ["Ciu", "Ferr", "Mer", "Alaior", "Migjorn", "S.Tomàs", "Son Bou", "Galdana"]
+                    };
+                    let paradas = diccionario[this.miLinea] || ['Ciu', 'Ferr', 'Mer', 'Alaior', 'Maó', 'Castell', 'S.Lluís', 'C.Porter', 'S.Bou', 'Galdana', 'S.Tomàs', 'Migjorn', 'P.Prima', 'Fornells', 'Arenal'];
+                    this.misParadasArray = paradas;
+                    this.miUbicacion = paradas[0]; // Empieza en el primer pueblo
+                },
+
+                invertirRuta() {
+                    this.misParadasArray = this.misParadasArray.slice().reverse();
+                    if ("vibrate" in navigator) navigator.vibrate(30);
+                },
+
+                async mantenerPantallaDespierta() {
+                    if ('wakeLock' in navigator) {
+                        try { this.wakeLockStatus = await navigator.wakeLock.request('screen'); } catch (err) {}
+                    }
+                },
+
+                iniciarTurno() {
+                    if (!this.miBusInput || this.miBusInput <= 0) { alert("Pon tu número de bus."); return; }
+                    this.miBus = this.miBusInput.toString();
+                    this.miLinea = this.miLineaInput;
+                    
+                    this.cargarParadas();
+
+                    localStorage.setItem('bustalk_bus', this.miBus);
+                    localStorage.setItem('bustalk_linea', this.miLinea);
+                    this.sesionIniciada = true;
+
+                    this.mantenerPantallaDespierta();
+                    document.addEventListener('visibilitychange', () => {
+                        if (document.visibilityState === 'visible') this.mantenerPantallaDespierta();
+                    });
+
+                    this.playAudioAviso('local');
+
+                    auth.signInAnonymously().then(() => {
+                        this.conectado = true;
+                        this.actualizarMiEstadoBD();
+
+                        // RADAR (2 HORAS DE LIMPIEZA)
+                        db.collection("bustalk_buses").onSnapshot(snap => {
+                            const lista =[];
+                            snap.forEach(doc => {
+                                const data = doc.data();
+                                if(doc.id !== this.miBus && (this.miLinea === 'General' || data.linea === this.miLinea || data.linea === 'General')) {
+                                    // BORRADO AUTOMÁTICO A LAS 2 HORAS (2 * 60 * 60 * 1000)
+                                    if(data.timestamp > Date.now() - (2 * 60 * 60 * 1000)) lista.push({ id: doc.id, ...data });
+                                }
+                            });
+                            this.compañeros = lista.sort((a,b) => b.pax - a.pax);
+                        });
+
+                        // RADIO
+                        db.collection("bustalk_radio").orderBy("timestamp", "desc").limit(1)
+                            .onSnapshot(snap => {
+                                if(snap.empty) return;
+                                const msg = snap.docs[0].data();
+                                const msgId = snap.docs[0].id;
+                                
+                                // Escucha si es de tu línea, O SI EL MENSAJE ES GLOBAL (linea === 'General')
+                                if (msg.bus !== this.miBus && this.streamingMsgId !== msgId && (this.miLinea === 'General' || msg.linea === this.miLinea || msg.linea === 'General')) {
+                                    this.streamingMsgId = msgId;
+                                    this.ultimoAudio = msg.audioBase64; 
+                                    this.reproducirMensaje(msg.audioBase64, msg.bus, msg.linea);
+                                }
+                            });
+                            
+                        navigator.mediaDevices.getUserMedia({ audio: true }).catch(e => console.log("Mic no autorizado aún"));
+                    }).catch((error) => { 
+                        this.conectado = false; this.sesionIniciada = false;
+                        alert("❌ Error: " + error.message); 
+                    });
+                },
+
+                cerrarTurno() {
+                    if(confirm("¿Apagar la radio y salir del turno?")) {
+                        db.collection("bustalk_buses").doc(this.miBus).delete();
+                        localStorage.removeItem('bustalk_bus');
+                        location.reload();
+                    }
+                },
+
+                // SISTEMA CONTINUO DE PASAJEROS
+                iniciarPax(valor) {
+                    this.cambiarPasajerosUnico(valor);
+                    this.intervaloPax = setInterval(() => { this.cambiarPasajerosUnico(valor); }, 150); // Sube súper rápido
+                },
+                cambiarPasajerosUnico(valor) {
+                    this.miPax = Math.max(0, this.miPax + valor);
+                    if ("vibrate" in navigator) navigator.vibrate(10); // micro vibración por persona
+                },
+                pararPax() {
+                    if(this.intervaloPax) {
+                        clearInterval(this.intervaloPax);
+                        this.intervaloPax = null;
+                        this.actualizarMiEstadoBD(); // Se guarda en internet solo al soltar el dedo
+                    }
+                },
+
+                actualizarUbicacion(lugar) {
+                    this.miUbicacion = lugar; this.enParada = true; this.etaFinal = null;
+                    this.actualizarMiEstadoBD();
+                    if ("vibrate" in navigator) navigator.vibrate(50);
+                },
+
+                toggleParada() {
+                    this.enParada = !this.enParada;
+                    if(!this.enParada) { this.etaFinal = Date.now() + (this.minutosRuta * 60 * 1000); } 
+                    else { this.etaFinal = null; }
+                    this.actualizarMiEstadoBD();
+                    if ("vibrate" in navigator) navigator.vibrate(50);
+                },
+
+                ajustarMinutos(val) {
+                    this.minutosRuta = Math.max(1, this.minutosRuta + val);
+                    this.etaFinal = Date.now() + (this.minutosRuta * 60 * 1000);
+                    this.actualizarMiEstadoBD();
+                },
+
+                toggleAlerta(tipo) {
+                    if (this.miAlerta === tipo) this.miAlerta = null; 
+                    else this.miAlerta = tipo; 
+                    this.actualizarMiEstadoBD();
+                    if ("vibrate" in navigator) navigator.vibrate(50);
+                },
+
+                actualizarMiEstadoBD() {
+                    if(!this.conectado) return;
+                    db.collection("bustalk_buses").doc(this.miBus).set({
+                        linea: this.miLinea, pax: this.miPax, ubicacion: this.miUbicacion,
+                        enParada: this.enParada, eta: this.etaFinal, alerta: this.miAlerta, timestamp: Date.now()
+                    });
+                },
+
+                calcularMinutos(etaMs) {
+                    if(!etaMs) return 0;
+                    const diff = etaMs - Date.now();
+                    return Math.max(0, Math.round(diff / 60000));
+                },
+
+                empezarGrabar() {
+                    if (this.estadoRadio !== 'reposo') return; 
+                    navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+                        this.estadoRadio = 'grabando';
+                        if ("vibrate" in navigator) navigator.vibrate(100); 
+
+                        this.chunks =[];
+                        this.mediaRecorder = new MediaRecorder(stream);
+                        this.mediaRecorder.ondataavailable = e => { this.chunks.push(e.data); };
+
+                        this.mediaRecorder.onstop = async () => {
+                            const audioBlob = new Blob(this.chunks, { type: 'audio/webm' });
+                            const base64Audio = await this.blobToBase64(audioBlob);
+
+                            // Si "Modo Global" está activado, la línea que manda a BD es 'General'
+                            const canalEnvio = this.modoGlobal ? 'General' : this.miLinea;
+
+                            db.collection("bustalk_radio").add({
+                                bus: this.miBus, linea: canalEnvio,
+                                audioBase64: base64Audio, timestamp: firebase.firestore.FieldValue.serverTimestamp()
+                            });
+                            
+                            stream.getTracks().forEach(track => track.stop());
+                            
+                            // Si lo usó para emergencia, se desactiva solo tras hablar
+                            if(this.modoGlobal) this.modoGlobal = false;
+                        };
+                        this.mediaRecorder.start();
+                    }).catch(err => { alert("Activa los permisos de micrófono para hablar."); });
+                },
+
+                pararGrabar() {
+                    if (this.estadoRadio === 'grabando' && this.mediaRecorder) {
+                        this.mediaRecorder.stop(); this.estadoRadio = 'reposo';
+                    }
+                },
+
+                pararGrabarSiSale() { this.pararGrabar(); },
+
+                reproducirMensaje(base64, busSender, lineaMensaje) {
+                    this.estadoRadio = 'recibiendo'; 
+                    this.elQueHabla = busSender;
+                    this.lineaQueHabla = lineaMensaje === 'General' ? 'GLOBAL / EMERGENCIA' : lineaMensaje;
+                    
+                    if ("vibrate" in navigator) navigator.vibrate([100, 100, 100]); 
+                    
+                    // ANTI-ATASCOS: Si a los 10 seg. no ha terminado, fuerza el cierre
+                    clearTimeout(this.watchdogRadio);
+                    this.watchdogRadio = setTimeout(() => { this.resetRadio(); }, 10000);
+
+                    // Sonido Inteligente
+                    const tipoSonido = lineaMensaje === 'General' ? 'global' : 'local';
+                    this.playAudioAviso(tipoSonido);
+                    
+                    // El Ding-Dong dura más, así que esperamos un poco más antes de la voz
+                    const esperaVoz = lineaMensaje === 'General' ? 1400 : 500;
+
+                    setTimeout(() => {
+                        const audio = new Audio(base64);
+                        audio.play().catch(e => { console.log("Bloqueado"); this.resetRadio(); });
+                        
+                        audio.onended = () => { this.resetRadio(); };
+                        audio.onerror = () => { this.resetRadio(); }; // Anti-atascos por error
+                    }, esperaVoz); 
+                },
+
+                repetirUltimoAudio() {
+                    if (!this.ultimoAudio || this.estadoRadio !== 'reposo') return;
+                    this.estadoRadio = 'recibiendo';
+                    const audio = new Audio(this.ultimoAudio);
+                    audio.play().catch(e => { console.log("Bloqueado"); this.resetRadio(); });
+                    audio.onended = () => { this.resetRadio(); };
+                },
+
+                resetRadio() {
+                    this.estadoRadio = 'reposo'; this.elQueHabla = null; this.lineaQueHabla = '';
+                    clearTimeout(this.watchdogRadio);
+                },
+
+                blobToBase64(blob) {
+                    return new Promise((resolve, reject) => {
+                        const reader = new FileReader(); reader.readAsDataURL(blob);
+                        reader.onloadend = () => resolve(reader.result); reader.onerror = reject;
+                    });
+                },
+
+                playAudioAviso(tipo) {
+                    try {
+                        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                        const osc = ctx.createOscillator(); const gain = ctx.createGain();
+                        osc.connect(gain); gain.connect(ctx.destination);
+                        
+                        if(tipo === 'local') {
+                            // Ding seco y rápido
+                            osc.type = 'sine'; osc.frequency.setValueAtTime(1000, ctx.currentTime);
+                            gain.gain.setValueAtTime(0.6, ctx.currentTime);
+                            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
+                            osc.start(); osc.stop(ctx.currentTime + 0.3);
+                        } else if (tipo === 'global') {
+                            // DING-DONG Avión (Fuerte)
+                            osc.type = 'sine'; 
+                            osc.frequency.setValueAtTime(800, ctx.currentTime); // Ding
+                            osc.frequency.setValueAtTime(600, ctx.currentTime + 0.6); // Dong
+                            
+                            gain.gain.setValueAtTime(0, ctx.currentTime);
+                            gain.gain.linearRampToValueAtTime(0.8, ctx.currentTime + 0.1); // Entrada suave
+                            gain.gain.exponentialRampToValueAtTime(0.1, ctx.currentTime + 0.5); // Cae
+                            
+                            gain.gain.linearRampToValueAtTime(0.8, ctx.currentTime + 0.6); // Sube 2
+                            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 1.2); // Cae final
+
+                            osc.start(); osc.stop(ctx.currentTime + 1.2);
+                        } else if (tipo === 'connect') {
+                            osc.type = 'sine'; osc.frequency.setValueAtTime(500, ctx.currentTime);
+                            gain.gain.setValueAtTime(0.3, ctx.currentTime); gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5);
+                            osc.start(); osc.stop(ctx.currentTime + 0.5);
+                        }
+                    } catch (e) { }
+                }
+            }
+        }
+    </script>
+</body>
+</html>
